@@ -1,0 +1,9 @@
+name: 'PA alt'
+description: 'Adds Code Review Process validations'
+inputs:
+  github-token:
+    description: 'The token to use to access the GitHub API'
+    required: true
+runs:
+  using: 'node16'
+  main: 'dist/index.js'
