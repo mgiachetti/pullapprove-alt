@@ -110,7 +110,7 @@ const GH_COMMIT_CONTEXT = 'pullapprove2';
   }} GHPullFile;
 
  @typedef {{
-  state: 'APPROVED' | 'DISMISSED' | 'REJECTED' | string,
+  state: 'APPROVED' | 'DISMISSED' | 'REJECTED' | 'CHANGES_REQUESTED' | string,
   user: {
     login: string;
   };
@@ -122,7 +122,9 @@ const GH_COMMIT_CONTEXT = 'pullapprove2';
    description: string;
   //  target_url: string;
   //  context: string;
- }} CommitStatus;
+  addLabels?: string[];
+  removeLabels?: string[];
+ }} PRStatus;
 */
 
 /**
@@ -320,13 +322,13 @@ function getUserTeams(teams, login) {
  * @param {Team[]} teams
  * @param {Context} context 
  * @param {GHReview[]} reviews
- * @returns {CommitStatus}
+ * @returns {PRStatus}
  */
 function evalStatus(config, teams, context, reviews) {
   for (const cond of (config.overrides || [])) {
     if (cond.if && !evalCondition(cond.if, context)) {
       return {
-        state: cond.status,
+        state: cond.status || 'failure',
         description: cond.explanation || 'Pr conditions not met!',
       };
     }
@@ -335,44 +337,86 @@ function evalStatus(config, teams, context, reviews) {
   for (const cond of (config.pullapprove_conditions || [])) {
     if (cond.condition && !evalCondition(cond.condition, context)) {
       return {
-        state: 'failure',
+        state: cond.unmet_status || 'failure',
         description: cond.explanation || 'Pr conditions not met!',
       };
     }
   }
 
-  const rejectedReviews = reviews.filter(rev => rev.state === 'REJECTED');
-  if (rejectedReviews.length) {
-    return {
-      state: 'failure',
-      description: `${rejectedReviews.map(rev => rev.user.login).join(',')} rejected pr`,
-    };
-  }
-
-  for (const [groupName, group] of Object.entries(config.groups || {})) {
-    const validGroup = !group.conditions || !group.conditions.find((c) => !evalCondition(c, context));
-    if (!validGroup) continue;
-    const groupReviews = reviews.filter(rev => rev.state === 'APPROVED'
-      && rev.user.login !== context.user.login
-      && rev.commit_id === context.head.sha
+  const groupsRes = Object.entries(config.groups || {}).map(([groupName, group]) => {
+    const activeGroup = !group.conditions || !group.conditions.find((c) => !evalCondition(c, context));
+    if (!activeGroup) return undefined;
+    const groupReviews = reviews.filter(rev => rev.user.login !== context.user.login
       && (
-        !!getUserTeams(teams, rev.user.login).find((ut) => (group.reviewers.teams || []).includes(ut))
+        !!getUserTeams(teams, rev.user.login).find((userTeam) => (group.reviewers.teams || []).includes(userTeam))
         || (group.reviewers.users || []).includes(rev.user.login)
       )
     );
-    if (groupReviews.length < group.reviews.required) {
-      return  {
-        state: 'failure',
-        description: `${groupName} ${groupReviews.length}/${group.reviews.required}`,
-      };
-    } else {
-      console.log(`OK ${groupName} ${groupReviews.length}/${group.reviews.required}`);
-    }
-  }
+    const approvedReviews = groupReviews.filter((rev) => rev.state === 'APPROVED' && rev.commit_id === context.head.sha);
+    const rejectedReviews = groupReviews.filter((rev) => ['REJECTED', 'CHANGES_REQUESTED'].includes(rev.state));
+    const pending = approvedReviews.length < group.reviews.required;
+    const rejected = rejectedReviews.length > 0;
+    const status = rejected ? 'rejected' : pending ? 'pending' : 'approved';
+    const addLabels = Object.entries(group.labels || {})
+      .filter(([key]) => key === status)
+      .map(([_, label]) => label);
+    const removeLabels =  Object.entries(group.labels || {})
+      .filter(([key]) => key !== status)
+      .map(([_, label]) => label);
+    return  {
+      name: groupName,
+      required: group.reviews.required,
+      reviews: groupReviews,
+      approvedReviews,
+      rejectedReviews,
+      status,
+      addLabels,
+      removeLabels,
+      rejected,
+      pending,
+    };
+  }).filter(res => !!res);
 
+  const pendingGroups = groupsRes.filter(group => group.status === 'pending');
+  const approvedGroups = groupsRes.filter(group => group.status === 'approved');
+  const rejectedGroups = groupsRes.filter(group => group.status === 'rejected');
+
+  // Pull approve text
+  // const groupText = (name, len) => (len > 0 ? `${len} ${len === 1  ? 'group' : 'groups'} ${name}` : '');
+  // const descriptionAlt = [
+  //   groupText('rejected', rejectedGroups.length),
+  //   groupText('pending', pendingGroups.length),
+  //   groupText('approved', approvedGroups.length),
+  // ].filter(p => p.length).join(', ')
+
+  const description = groupsRes.map(
+    ({rejected, name, required, approvedReviews }) =>
+      rejected ? `${name} rejected`
+      : `${name} ${approvedReviews.length}/${required}`)
+    .join(', ');
+
+  const state = rejectedGroups.length ? 'failure'
+    : pendingGroups.length ? 'pending' : 'success';
+
+  const addLabels = Object.keys(groupsRes
+    .flatMap(g => g.addLabels)
+    .reduce((acc, label) => ({
+      ...acc,
+      [label]: true,
+    }), {}))
+
+  const removeLabels = Object.keys(groupsRes
+    .flatMap(g => g.removeLabels)
+    .reduce((acc, label) => ({
+      ...acc,
+      [label]: true,
+    }), {}))
+  
   return {
-    state: 'success',
-    description: 'pr ok',
+    state,
+    description,
+    addLabels,
+    removeLabels,
   };
 }
 
@@ -391,6 +435,7 @@ async function runForRepo(octokit, owner, repo, pull_number) {
 
   console.log(JSON.stringify(res,undefined,2));
 
+  // update commit status
   await octokit.rest.repos.createCommitStatus({
     owner,
     repo,
@@ -399,16 +444,24 @@ async function runForRepo(octokit, owner, repo, pull_number) {
     description: res.description,
     context: GH_COMMIT_CONTEXT,
   });
+
+  // update labels
+  const newLabels = context.labels
+    .filter(l => (res.removeLabels || []).includes(l.name))
+    .concat((res.addLabels || []).map((name) => ({ name })));
+  await octokit.rest.issues.update({
+    owner,
+    repo,
+    issue_number: pull_number,
+    labels: newLabels,
+  });
 }
 
 async function run() {
   try {
-    console.log('CONTEXT', JSON.stringify(github.context, undefined, 2));
-    console.log('PAYLOAD', JSON.stringify(github.context.payload, undefined, 2));
     const token = core.getInput('github-token', { required: true });
     const owner = github.context.repo.owner;
     const repo = github.context.repo.repo;
-    // const pull_number = github.context.issue.number;
     const pull_number = github.context.payload.pull_request.number;
     const octokit = github.getOctokit(token);
 

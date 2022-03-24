@@ -17,7 +17,7 @@ jobs:
     name: Update CR Status
     steps:
       - name: Run CR Status
-        uses: mgiachetti/pullapprove-alt@master
+        uses: mgiachetti/pullapprove-alt@main
         with:
           github-token: ${{ secrets.CR_GITHUB_TOKEN }}
 ```
@@ -48,7 +48,7 @@ features:
     - [ ] request_order
     - [ ] reviewed_for
   - [ ] description
-  - [ ] labels
+  - [x] labels
   - [x] meta
 - [ ] notifications
 - [ ] extends
