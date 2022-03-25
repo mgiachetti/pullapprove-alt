@@ -245,7 +245,12 @@ async function getReviews(api, owner, repo, pull_number) {
     repo,
     pull_number,
   });
-  return reviewResponse.data;
+
+  // make reviews uniq for a user (keep last)
+  return Object.values(reviewResponse.data.reduce((acc, rev) => ({
+    ...acc,
+    [rev.user.login]: rev,
+  }), {}));
 }
 
 /**
