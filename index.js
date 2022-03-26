@@ -2,7 +2,7 @@
 const core = require('@actions/core');
 const github = require('@actions/github');
 const yaml = require('yaml');
-const GH_COMMIT_CONTEXT = 'pullapprove2';
+const GH_COMMIT_CONTEXT = 'pullapprove';
 
 /**
 
