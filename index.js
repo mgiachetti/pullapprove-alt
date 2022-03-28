@@ -75,7 +75,7 @@ const GH_COMMIT_CONTEXT = 'pullapprove';
 
   @typedef {{
     title: string;
-    state: 'open' | 'closed' | string;
+    state: 'open' | 'closed';
     user: {
       login: string;
     };
@@ -110,7 +110,7 @@ const GH_COMMIT_CONTEXT = 'pullapprove';
   }} GHPullFile;
 
  @typedef {{
-  state: 'APPROVED' | 'DISMISSED' | 'REJECTED' | 'CHANGES_REQUESTED' | string,
+  state: 'APPROVED' | 'DISMISSED' | 'REJECTED' | 'CHANGES_REQUESTED',
   user: {
     login: string;
   };
@@ -125,6 +125,18 @@ const GH_COMMIT_CONTEXT = 'pullapprove';
   addLabels?: string[];
   removeLabels?: string[];
  }} PRStatus;
+
+ @typedef {{
+  name: string,
+  requiredCount: number,
+  reviews: GHReview[],
+  approvedReviews: GHReview[],
+  rejectedReviews: GHReview[],
+  status: 'rejected' | 'pending' | 'approved',
+  addLabels: string[],
+  removeLabels: string[],
+ }} GroupStatus;
+
 */
 
 /**
@@ -246,7 +258,7 @@ async function getReviews(api, owner, repo, pull_number) {
     pull_number,
   });
 
-  // make reviews uniq for a user (keep last)
+  // make reviews uniq for an users (keep last)
   return Object.values(reviewResponse.data.reduce((acc, rev) => ({
     ...acc,
     [rev.user.login]: rev,
@@ -368,22 +380,19 @@ function evalStatus(config, teams, context, reviews) {
     const removeLabels =  Object.entries(group.labels || {})
       .filter(([key]) => key !== status)
       .map(([_, label]) => label);
-    return  {
+    return  /** @type {GroupStatus} */({
       name: groupName,
-      required: group.reviews.required,
+      requiredCount: group.reviews.required,
       reviews: groupReviews,
       approvedReviews,
       rejectedReviews,
       status,
       addLabels,
       removeLabels,
-      rejected,
-      pending,
-    };
+    });
   }).filter(res => !!res);
 
   const pendingGroups = groupsRes.filter(group => group.status === 'pending');
-  const approvedGroups = groupsRes.filter(group => group.status === 'approved');
   const rejectedGroups = groupsRes.filter(group => group.status === 'rejected');
 
   // Pull approve text
@@ -395,9 +404,9 @@ function evalStatus(config, teams, context, reviews) {
   // ].filter(p => p.length).join(', ')
 
   const description = groupsRes.map(
-    ({rejected, name, required, approvedReviews }) =>
-      rejected ? `${name} rejected`
-      : `${name} ${approvedReviews.length}/${required}`)
+    ({status, name, requiredCount, approvedReviews }) =>
+      status === 'rejected' ? `${name} rejected`
+      : `${name} ${approvedReviews.length}/${requiredCount}`)
     .join(', ');
 
   const state = rejectedGroups.length ? 'failure'
