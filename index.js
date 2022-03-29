@@ -461,7 +461,7 @@ async function runForRepo(octokit, owner, repo, pull_number) {
 
   // update labels
   const newLabels = context.labels
-    .filter(l => (res.removeLabels || []).includes(l.name))
+    .filter(l => !(res.removeLabels || []).includes(l.name))
     .concat((res.addLabels || []).map((name) => ({ name })));
   await octokit.rest.issues.update({
     owner,
